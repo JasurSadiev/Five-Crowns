@@ -17,13 +17,37 @@
       #boot {
         position: fixed; inset: 0; display: grid; place-items: center;
         font-family: system-ui, sans-serif; color: #e9b534; gap: 12px;
+        padding: 24px; text-align: center;
       }
+      /*
+        The single most important rule in this file.
+
+        #boot is a full-screen overlay. If it is ever left in place it hides the
+        entire application behind a spinner that never stops. This rule removes
+        it the instant React puts anything inside #root, with no JavaScript
+        involved - so the overlay cannot outlive the app even if a script fails,
+        runs out of order, or throws during hydration.
+      */
+      #root:not(:empty) + #boot { display: none !important; }
       #boot .ring {
         width: 42px; height: 42px; border-radius: 999px;
         border: 3px solid rgba(233,181,52,0.25); border-top-color: #e9b534;
         animation: spin 0.9s linear infinite; margin: 0 auto 14px;
       }
       @keyframes spin { to { transform: rotate(360deg); } }
+      #boot .diag {
+        display: none; max-width: 32rem; color: #e2e8f0;
+        font-size: 14px; line-height: 1.6;
+      }
+      #boot.failed .ring, #boot.failed .wordmark { display: none; }
+      #boot.failed .diag { display: block; }
+      #boot .diag h1 { color: #f8fafc; font-size: 18px; margin: 0 0 8px; }
+      #boot .diag code {
+        background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 4px;
+        font-size: 13px;
+      }
+      #boot .diag ul { text-align: left; margin: 12px auto 0; padding-left: 20px; }
+      #boot .diag li { margin: 6px 0; }
     </style>
   </head>
   <body>
@@ -31,9 +55,58 @@
     <div id="boot">
       <div style="text-align:center">
         <div class="ring"></div>
-        <div style="letter-spacing:0.3em;font-size:12px;text-transform:uppercase">Five Crowns</div>
+        <div class="wordmark" style="letter-spacing:0.3em;font-size:12px;text-transform:uppercase">
+          Five Crowns
+        </div>
+        <div class="diag">
+          <h1>The app could not start</h1>
+          <p>
+            The page loaded but the application never mounted. This is almost always a
+            configuration problem rather than a bug in the game.
+          </p>
+          <ul>
+            <li>Open the browser console - the first red error names the cause.</li>
+            <li>
+              Check that the site was built with your real Firebase values
+              (<code>VITE_FIREBASE_*</code>) and <strong>not</strong> with
+              <code>VITE_USE_EMULATORS=true</code>.
+            </li>
+            <li>
+              Remember that <code>.env.local</code> overrides <code>.env</code> during
+              <code>vite build</code>.
+            </li>
+          </ul>
+        </div>
       </div>
     </div>
+    <script>
+      /*
+        Watchdog. A spinner that spins forever tells the user nothing, so if
+        React has not rendered within 12 seconds we swap it for an actionable
+        message. Cleared by main.tsx as soon as the app mounts.
+      */
+      window.__bootWatchdog = window.setTimeout(function () {
+        var root = document.getElementById('root');
+        var boot = document.getElementById('boot');
+        if (boot && root && root.childElementCount === 0) boot.className = 'failed';
+      }, 12000);
+
+      window.addEventListener('error', function (event) {
+        var root = document.getElementById('root');
+        var boot = document.getElementById('boot');
+        if (boot && root && root.childElementCount === 0) {
+          clearTimeout(window.__bootWatchdog);
+          boot.className = 'failed';
+          var diag = boot.querySelector('.diag');
+          if (diag && event.message) {
+            var pre = document.createElement('code');
+            pre.style.cssText = 'display:block;margin-top:12px;word-break:break-word';
+            pre.textContent = String(event.message);
+            diag.appendChild(pre);
+          }
+        }
+      });
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

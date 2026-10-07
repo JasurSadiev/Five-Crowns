@@ -1,0 +1,238 @@
+rules_version = '2';
+
+/**
+ * Five Crowns - Firestore Security Rules
+ * ---------------------------------------------------------------------------
+ * Philosophy: the browser is never trusted.
+ *
+ *  - Authoritative game state (decks, hands, turns, scores) is written ONLY by
+ *    Cloud Functions, which use the Admin SDK and therefore bypass these rules.
+ *    Every rule below denies client writes to that data.
+ *  - Clients may read exactly what they are allowed to see: public game state,
+ *    their own private hand, and nothing else.
+ *  - The handful of client writes that are allowed (cosmetic card order,
+ *    presence heartbeat, private settings) are restricted field by field.
+ */
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ------------------------------ helpers ------------------------------ */
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isUser(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    /** Keys that changed in an update. */
+    function changed() {
+      return incoming().diff(existing()).affectedKeys();
+    }
+
+    function onlyChanged(allowed) {
+      return changed().hasOnly(allowed);
+    }
+
+    function isGamePlayer(gameId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/games/$(gameId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/games/$(gameId)).data.playerIds;
+    }
+
+    function isGameSpectator(gameId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/games/$(gameId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/games/$(gameId)).data.spectatorIds;
+    }
+
+    /** A public game with spectating enabled is watchable by anyone signed in. */
+    function isOpenToWatchers(gameId) {
+      return exists(/databases/$(database)/documents/games/$(gameId)) &&
+        get(/databases/$(database)/documents/games/$(gameId)).data.settings.allowSpectators == true &&
+        get(/databases/$(database)/documents/games/$(gameId)).data.settings.privacy == 'public';
+    }
+
+    /**
+     * Private games are readable only by their players and by spectators who
+     * explicitly joined through the `joinAsSpectator` Cloud Function.
+     */
+    function canSeeGame(gameId) {
+      return isGamePlayer(gameId) || isGameSpectator(gameId) ||
+        (signedIn() && isOpenToWatchers(gameId));
+    }
+
+    /* ------------------------------- users -------------------------------- */
+
+    match /users/{uid} {
+      // Public profile: any signed-in player can look up a name, avatar,
+      // presence and statistics (needed for lobbies, friends and leaderboards).
+      allow get, list: if signedIn();
+
+      // Profiles are created by the onCreate auth trigger, never by the client.
+      allow create: if false;
+      allow delete: if false;
+
+      // The owner may only push a presence heartbeat. Everything else
+      // (display name, avatar, statistics) goes through Cloud Functions so it
+      // can be validated and kept unique.
+      allow update: if isUser(uid)
+        && onlyChanged(['isOnline', 'presence', 'lastSeenAt'])
+        && incoming().presence in ['online', 'away', 'offline']
+        && incoming().isOnline is bool;
+
+      // Private half of the profile: email, settings, privacy, block list.
+      match /private/{docId} {
+        allow read: if isUser(uid);
+        allow create, update: if isUser(uid)
+          && (!('blocked' in incoming()) || incoming().blocked is list)
+          && (!('email' in incoming()) || incoming().email == existing().email || !exists(/databases/$(database)/documents/users/$(uid)/private/$(docId)));
+        allow delete: if false;
+      }
+    }
+
+    // Username uniqueness index - written by Cloud Functions only.
+    match /usernames/{nameLower} {
+      allow get: if signedIn();
+      allow list, write: if false;
+    }
+
+    /* ------------------------------ friends ------------------------------- */
+
+    match /friends/{pairKey} {
+      allow read: if signedIn() && request.auth.uid in resource.data.members;
+      allow write: if false; // sendFriendRequest / respondToFriendRequest / blockPlayer
+    }
+
+    /* --------------------------- invitations ------------------------------ */
+
+    match /gameInvitations/{invitationId} {
+      allow read: if signedIn() &&
+        (request.auth.uid == resource.data.recipientId ||
+         request.auth.uid == resource.data.senderId);
+      allow write: if false; // invitePlayer / respondToInvitation
+    }
+
+    /* ---------------------------- notifications --------------------------- */
+
+    match /notifications/{notificationId} {
+      allow read: if signedIn() && request.auth.uid == resource.data.uid;
+      // The only client write allowed is flipping `read` on your own notice.
+      allow update: if signedIn()
+        && request.auth.uid == resource.data.uid
+        && onlyChanged(['read'])
+        && incoming().read is bool;
+      allow create: if false;
+      allow delete: if signedIn() && request.auth.uid == resource.data.uid;
+    }
+
+    /* ------------------------------ lobbies ------------------------------- */
+
+    match /lobbies/{lobbyId} {
+      // Public lobbies are browsable; private lobbies are visible to members.
+      allow get: if signedIn() &&
+        (resource.data.settings.privacy == 'public' ||
+         request.auth.uid in resource.data.playerIds);
+      allow list: if signedIn();
+      allow write: if false; // createLobby / joinLobby / leaveLobby / startGame
+
+      match /chat/{messageId} {
+        allow read: if signedIn() &&
+          request.auth.uid in get(/databases/$(database)/documents/lobbies/$(lobbyId)).data.playerIds;
+        allow write: if false; // sendChatMessage (rate limited server side)
+      }
+    }
+
+    // Active join codes. Only the server may read or write them so that codes
+    // cannot be enumerated to crash private lobbies.
+    match /lobbyCodes/{code} {
+      allow read, write: if false;
+    }
+
+    /* ------------------------------- games -------------------------------- */
+
+    match /games/{gameId} {
+      // Public game state: everything an opponent is allowed to know.
+      allow get, list: if canSeeGame(gameId);
+      allow write: if false; // every mutation is a Cloud Function
+
+      // Public per-player state (name, avatar, card COUNT, score, presence).
+      match /players/{playerId} {
+        allow read: if canSeeGame(gameId);
+        allow write: if false;
+      }
+
+      // PRIVATE hands. A player can read only their own cards; spectators and
+      // opponents can never read them, and nobody can write them.
+      match /hands/{playerId} {
+        allow get: if isUser(playerId);
+        allow list: if false;
+        // Cosmetic card ordering is the one field the owner may touch.
+        allow update: if isUser(playerId)
+          && onlyChanged(['order', 'updatedAt'])
+          && incoming().order is list
+          && incoming().order.size() <= 20;
+        allow create, delete: if false;
+      }
+
+      // Server-only secrets: the shuffled draw pile and the full round state.
+      // Nobody can read this, ever - not even the players.
+      match /secret/{docId} {
+        allow read, write: if false;
+      }
+
+      match /rounds/{roundId} {
+        allow read: if canSeeGame(gameId);
+        allow write: if false;
+      }
+
+      match /events/{eventId} {
+        allow read: if canSeeGame(gameId);
+        allow write: if false;
+      }
+
+      match /chat/{messageId} {
+        allow read: if canSeeGame(gameId);
+        allow write: if false; // sendChatMessage
+      }
+    }
+
+    /* ---------------------------- game history ---------------------------- */
+
+    match /gameHistory/{gameId} {
+      allow get: if signedIn();
+      allow list: if signedIn();
+      allow write: if false;
+    }
+
+    /* ------------------------- reports & limits --------------------------- */
+
+    match /reports/{reportId} {
+      allow read, write: if false; // submitReport (Cloud Function) / moderators
+    }
+
+    match /rateLimits/{docId} {
+      allow read, write: if false;
+    }
+
+    match /leaderboards/{docId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    /* ----------------------------- catch-all ------------------------------ */
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

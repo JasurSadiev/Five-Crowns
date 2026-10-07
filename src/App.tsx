@@ -62,6 +62,68 @@ function RedirectIfAuthed({ children }: { children: ReactNode }): JSX.Element {
   return <>{children}</>;
 }
 
+const STARTUP_ERRORS: Record<string, { title: string; body: string; hint: string }> = {
+  missing: {
+    title: 'This app has not been configured yet',
+    body: 'The Firebase web app credentials are missing, so there is no backend to talk to.',
+    hint: 'Copy .env.example to .env, fill in your VITE_FIREBASE_* values, then rebuild and redeploy.',
+  },
+  demo: {
+    title: 'This build is using the demo configuration',
+    body: 'It was built with the bundled emulator profile instead of a real Firebase project, so sign-in and games cannot work.',
+    hint: 'Remove .env.local / .env.development.local from the build machine, create a .env with your real Firebase values, then run npm run build again.',
+  },
+  emulator: {
+    title: 'This build is pointed at the local emulators',
+    body: 'It was built with VITE_USE_EMULATORS=true, which only works on a developer machine running the Firebase Emulator Suite.',
+    hint: 'Note that Vite loads .env.local during "vite build" and it overrides .env. Keep emulator settings in .env.development.local, then rebuild.',
+  },
+  unreachable: {
+    title: 'Could not reach Firebase',
+    body: 'The app loaded, but Firebase Authentication never responded. This is usually a network problem or a domain that has not been authorised.',
+    hint: 'Check your connection, then confirm this domain is listed under Authentication → Settings → Authorised domains in the Firebase console.',
+  },
+  auth: {
+    title: 'Sign-in service unavailable',
+    body: 'Firebase Authentication reported an error while starting up.',
+    hint: 'Open the browser console for the underlying error. Verify that Email/Password and Google sign-in are enabled for this project.',
+  },
+};
+
+/**
+ * Shows an actionable screen when the app cannot reach its backend.
+ *
+ * Previously every one of these cases produced an endless "Checking your
+ * session…" spinner, which is indistinguishable from a hung page.
+ */
+function StartupGate({ children }: { children: ReactNode }): JSX.Element {
+  const { startupError } = useAuth();
+  if (!startupError) return <>{children}</>;
+
+  const detail = STARTUP_ERRORS[startupError] ?? STARTUP_ERRORS.auth;
+  return (
+    <main className="grid min-h-screen place-items-center bg-felt-table px-6 py-16">
+      <div className="panel max-w-xl space-y-4 p-8 text-center">
+        <div className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-amber-500/15 text-3xl">
+          <span aria-hidden="true">⚠️</span>
+        </div>
+        <h1 className="font-display text-2xl text-ink">{detail.title}</h1>
+        <p className="text-ink/70">{detail.body}</p>
+        <p className="rounded-xl border border-line bg-surface/60 p-4 text-left text-sm text-ink/60">
+          {detail.hint}
+        </p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="rounded-xl bg-gold-500 px-5 py-2.5 font-medium text-felt-950 transition hover:bg-gold-400"
+        >
+          Try again
+        </button>
+      </div>
+    </main>
+  );
+}
+
 function AppRoutes(): JSX.Element {
   return (
     <AppShell>
@@ -209,7 +271,9 @@ export default function App(): JSX.Element {
           <ThemeProvider>
             <ToastProvider>
               <ScrollToTop />
-              <AppRoutes />
+              <StartupGate>
+                <AppRoutes />
+              </StartupGate>
             </ToastProvider>
           </ThemeProvider>
         </AuthProvider>

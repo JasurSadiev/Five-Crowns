@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { auth, db } from '../firebase/config';
+import { auth, configProblem, db } from '../firebase/config';
 import { watchAuth, type User } from '../firebase/auth';
 import { watch } from '../firebase/firestore';
 import { api } from '../firebase/functions';
@@ -30,6 +30,8 @@ interface AuthContextValue {
   settings: UserSettings;
   privacy: PrivacySettings;
   loading: boolean;
+  /** Set when Firebase itself is unreachable or misconfigured. */
+  startupError: string | null;
   /** True while the profile document is still being created/fetched. */
   profileLoading: boolean;
   emailVerified: boolean;
@@ -45,19 +47,60 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [privateProfile, setPrivateProfile] = useState<UserPrivate | null>(null);
   const [loading, setLoading] = useState(true);
+  const [startupError, setStartupError] = useState<string | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const ensuredFor = useRef<string | null>(null);
 
   useEffect(() => {
-    return watchAuth((next) => {
-      setUser(next);
+    // A build that cannot reach Firebase must say so rather than spin.
+    if (configProblem) {
       setLoading(false);
-      if (!next) {
-        setProfile(null);
-        setPrivateProfile(null);
-        ensuredFor.current = null;
-      }
-    });
+      setStartupError(configProblem);
+      return;
+    }
+
+    /*
+     * Watchdog. onAuthStateChanged normally fires within a few hundred
+     * milliseconds, even when signed out. If it has not fired at all we are
+     * talking to something that is not Firebase (a misrouted emulator host, a
+     * blocked domain, an offline device), and an endless spinner tells the
+     * user nothing. Stop blocking and explain instead.
+     */
+    let settled = false;
+    const watchdog = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      setLoading(false);
+      setStartupError('unreachable');
+    }, 10000);
+
+    const stop = watchAuth(
+      (next) => {
+        settled = true;
+        window.clearTimeout(watchdog);
+        setUser(next);
+        setLoading(false);
+        setStartupError(null);
+        if (!next) {
+          setProfile(null);
+          setPrivateProfile(null);
+          ensuredFor.current = null;
+        }
+      },
+      (error) => {
+        // Without this the promise never settles and `loading` stays true.
+        settled = true;
+        window.clearTimeout(watchdog);
+        console.error('[auth] listener failed', error);
+        setLoading(false);
+        setStartupError('auth');
+      },
+    );
+
+    return () => {
+      window.clearTimeout(watchdog);
+      stop();
+    };
   }, []);
 
   // Profile documents + presence, scoped to the signed-in user.
@@ -142,13 +185,24 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
       settings: { ...DEFAULT_USER_SETTINGS, ...(privateProfile?.settings ?? {}) },
       privacy: { ...DEFAULT_PRIVACY_SETTINGS, ...(privateProfile?.privacy ?? {}) },
       loading,
+      startupError,
       profileLoading,
       emailVerified: Boolean(user?.emailVerified),
       updateSettings,
       updatePrivacy,
       refresh,
     }),
-    [user, profile, privateProfile, loading, profileLoading, updateSettings, updatePrivacy, refresh],
+    [
+      user,
+      profile,
+      privateProfile,
+      loading,
+      startupError,
+      profileLoading,
+      updateSettings,
+      updatePrivacy,
+      refresh,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

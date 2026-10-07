@@ -146,6 +146,24 @@ The emulator UI is **disabled** in `firebase.json` to save ~150 MB. If you have 
 
 ---
 
+### Environment files, and one trap worth knowing
+
+Vite's precedence is `.env.[mode].local` > `.env.[mode]` > `.env.local` > `.env`.
+
+| File | Loaded by `npm run dev` | Loaded by `npm run build` | Use it for |
+| --- | --- | --- | --- |
+| `.env.example` | no | no | Documentation; the only env file in git |
+| `.env` | yes | **yes** | Your real Firebase project |
+| `.env.development.local` | **yes** | no | Emulator settings (shipped in this repo) |
+| `.env.local` | yes | **yes** | Avoid — it silently overrides `.env` in production builds |
+
+The trap: `.env.local` *looks* local but is loaded by production builds too, and it wins over
+`.env`. Emulator settings left there get deployed, and the site then hangs forever trying to
+reach an emulator that does not exist. Use `.env.development.local` instead. The build refuses
+to run with `VITE_USE_EMULATORS=true` in production mode, so this cannot happen silently again.
+
+---
+
 ## Setting up a real Firebase project
 
 ### 1. Create the project
@@ -239,7 +257,12 @@ This rewrites `.firebaserc`.
 npm run deploy
 ```
 
-That runs `tsc -b && vite build` and then `firebase deploy`. Finer-grained targets:
+That runs `tsc -b && vite build`, then `npm run verify:build`, then `firebase deploy`. The
+verification step reads the generated bundle and refuses to deploy if it contains emulator
+settings, demo credentials, or an `index.html` missing the boot-overlay safety net — the exact
+mistakes that previously produced a site stuck on its loading screen.
+
+Finer-grained targets:
 
 ```bash
 npm run deploy:rules        # firestore rules + indexes, database, storage
@@ -275,7 +298,9 @@ just because a schedule did not fire.
 ```bash
 npm run typecheck     # tsc --noEmit over the whole app
 npm test              # rules engine: 102 tests, no React, no network
-npm run test:ui       # jsdom smoke tests for the table rendering + app boot
+npm run test:ui       # 18 jsdom tests: table rendering, app boot, boot overlay
+npm run test:browser  # 20 assertions in real Chromium (see below)
+npm run verify:build  # inspects dist/ for undeployable configuration
 node scripts/e2e-backend.mjs   # 57 integration tests against live emulators
 ```
 
@@ -285,7 +310,25 @@ complete simulated 11-round games for 2–7 players.
 
 **The UI suite** (`src/__tests__/`) boots the real `<App />` and asserts the table never leaks an
 opponent's cards, that wild cards are marked with text rather than colour alone, and that every
-card is a labelled button.
+card is a labelled button. `boot.test.tsx` additionally loads the real `index.html` from disk,
+runs the real `src/main.tsx` against it, and fails if the boot overlay survives the mount.
+
+**The browser suite** (`scripts/browser-smoke.mjs`) drives real Chromium through Playwright,
+because nothing else catches a page that is technically correct but visually broken. HTTP status
+checks and jsdom component tests both missed a full-screen overlay that hid the entire app, since
+neither one ever composed the real `index.html` with a real mount. It asserts that the dev server
+paints actual content with nothing covering the viewport, that the dark theme applies, and that
+three undeployable builds (no credentials, demo credentials, emulator mode) each produce an
+actionable message rather than an endless spinner.
+
+It needs a browser once:
+
+```bash
+npx playwright install chromium
+sudo npx playwright install-deps chromium   # or the equivalent system packages
+npm run dev          # in another terminal, then:
+npm run test:browser
+```
 
 **The backend suite** (`scripts/e2e-backend.mjs`) talks raw HTTP to the emulators with real user
 ID tokens, so Security Rules are genuinely enforced. It asserts, among other things, that:
@@ -369,6 +412,23 @@ five-crowns/
 
 ## Troubleshooting
 
+**The deployed site shows a loading spinner that never finishes.**
+This was a real bug and it is fixed; if you see it again, one of these is the cause.
+
+1. *The build picked up your emulator settings.* `vite build` loads `.env.local` **in every
+   mode**, and `.env.local` outranks `.env`. A stray `VITE_USE_EMULATORS=true` therefore ships to
+   production, where the Auth SDK is pointed at your Hosting domain, Hosting rewrites the request
+   to `/index.html`, and the SDK waits for JSON that never arrives. Keep development settings in
+   `.env.development.local` (which `vite build` ignores) — that is why this repo ships one. The
+   build now fails outright rather than producing such a bundle, and `npm run verify:build`
+   inspects the output before every deploy.
+2. *Firebase is unreachable.* The app waits 10 seconds for Authentication, then shows a
+   "Could not reach Firebase" screen instead of spinning. Check your Authorized domains.
+3. *Credentials are missing.* You get a "This app has not been configured yet" screen. Copy
+   `.env.example` to `.env`, fill it in, rebuild.
+
+Run `npm run verify:build` at any time to inspect `dist/` for these mistakes.
+
 **`Missing or insufficient permissions` in the console.**
 Deploy the rules (`npm run deploy:rules`). If it happens on a specific list query, you are
 probably missing a composite index — the error text contains a link that creates it.
@@ -387,6 +447,14 @@ Your domain is not in Authentication → Settings → Authorized domains.
 **Blank page after deploying to Hosting.**
 `firebase.json` rewrites everything to `/index.html`, which is required for client-side routing.
 If you host elsewhere, replicate that SPA fallback.
+
+**About the pre-paint spinner in `index.html`.**
+`index.html` paints a `#boot` spinner before the bundle loads so there is never a white flash.
+It is a full-screen overlay, so three independent mechanisms take it down — do not remove any of
+them without replacing it: a pure-CSS rule (`#root:not(:empty) + #boot { display: none }`) that
+needs no JavaScript, explicit removal in `src/main.tsx`, and a 12-second watchdog that swaps the
+spinner for a diagnostic. `npm run verify:build` fails the build if the CSS rule goes missing, and
+`src/__tests__/boot.test.tsx` mounts the real `index.html` to prove the overlay disappears.
 
 **Scheduled cleanup functions do not run locally.**
 They need the pubsub emulator. Turn timeouts are also enforced interactively through the

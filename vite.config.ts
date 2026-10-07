@@ -38,8 +38,45 @@ function emulatorProxy(env: Record<string, string>): Record<string, string | Pro
   };
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), '');
+
+  /*
+   * Refuse to produce a deployable bundle that points at the emulators.
+   *
+   * Vite loads `.env.local` for `vite build` too, and it outranks `.env`, so a
+   * leftover development profile silently ships to production. The result is a
+   * site that hangs on its loading screen forever, which is very hard to debug
+   * from the outside. Fail the build instead.
+   */
+  if (command === 'build' && mode === 'production' && env.VITE_USE_EMULATORS === 'true') {
+    if (env.VITE_FORCE_EMULATORS !== 'true') {
+      throw new Error(
+        [
+          '',
+          'Refusing to build: VITE_USE_EMULATORS=true in a production build.',
+          '',
+          'This would deploy a site that tries to reach the Firebase emulators and',
+          'hangs on the loading screen forever.',
+          '',
+          'Remember Vite loads .env.local in EVERY mode and it overrides .env.',
+          'Keep emulator settings in .env.development.local instead, and put your',
+          'real Firebase values in .env or .env.production.',
+          '',
+          'Set VITE_FORCE_EMULATORS=true only if this is genuinely intentional.',
+          '',
+        ].join('\n'),
+      );
+    }
+  }
+
+  if (command === 'build' && mode === 'production' && !env.VITE_FIREBASE_PROJECT_ID) {
+    console.warn(
+      '\n[build] WARNING: VITE_FIREBASE_PROJECT_ID is empty. The deployed app will not ' +
+        'be able to reach Firebase. Copy .env.example to .env and fill it in.\n',
+    );
+  }
+
   return {
     plugins: [react()],
     resolve: {

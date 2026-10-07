@@ -19,8 +19,19 @@ import { friendlyError } from '../utils/errors';
 
 export type { User };
 
-export function watchAuth(callback: (user: User | null) => void): () => void {
-  return onAuthStateChanged(auth, callback);
+/**
+ * Subscribes to the signed-in user.
+ *
+ * The error callback is not optional in practice: if the Auth SDK cannot reach
+ * its backend (bad config, emulator settings baked into a production build, a
+ * blocked domain) the success callback never fires, and any UI gated on "have
+ * we resolved auth yet" would spin forever.
+ */
+export function watchAuth(
+  callback: (user: User | null) => void,
+  onError?: (error: Error) => void,
+): () => void {
+  return onAuthStateChanged(auth, callback, (error) => onError?.(error as Error));
 }
 
 export async function registerWithEmail(

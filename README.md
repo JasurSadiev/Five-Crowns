@@ -11,14 +11,15 @@ see the same table in real time, and a client that tries to cheat is rejected by
 ## Table of contents
 
 1. [What's in the box](#whats-in-the-box)
-2. [Architecture](#architecture)
-3. [Quick start (local, with emulators)](#quick-start-local-with-emulators)
-4. [Setting up a real Firebase project](#setting-up-a-real-firebase-project)
-5. [Deploying](#deploying)
-6. [Testing](#testing)
-7. [Project layout](#project-layout)
-8. [Security model](#security-model)
-9. [Troubleshooting](#troubleshooting)
+2. [Single player](#single-player)
+3. [Architecture](#architecture)
+4. [Quick start (local, with emulators)](#quick-start-local-with-emulators)
+5. [Setting up a real Firebase project](#setting-up-a-real-firebase-project)
+6. [Deploying](#deploying)
+7. [Testing](#testing)
+8. [Project layout](#project-layout)
+9. [Security model](#security-model)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -43,6 +44,35 @@ see the same table in real time, and a client that tries to cheat is rejected by
 - Game history with per-round scorecards, statistics, and global/friends leaderboards.
 - Light/dark themes, reduce-motion, high-contrast and large-card accessibility options.
 - Spectator mode that never exposes a hand.
+
+---
+
+## Single player
+
+Pick **Play → Play on your own** to start a full eleven-round game against one to six computer
+opponents at Easy, Normal or Hard.
+
+It is not a simulation or a separate code path. A solo game is an ordinary game document: the
+same Cloud Functions, the same Firestore transactions, the same security rules, the same scoring
+and the same history. The bots play through the very same `drawFromStock` / `takeDiscard` /
+`discard` engine functions a person does, executed **on the server**, so a bot cannot make a move
+you could not make, and no client can influence one. Their hands live in `games/{id}/hands/{botId}`
+and are unreadable by anyone, exactly like a human opponent's.
+
+| Difficulty | Behaviour |
+| --- | --- |
+| Easy | Throws its biggest card, often breaking its own melds; frequently ignores the discard pile. |
+| Normal | Uses the solver to pick the best discard, with occasional human-sized mistakes. |
+| Hard | Always plays the solver's best line, hunts the discard pile, avoids feeding you useful cards and never passes up a chance to go out. |
+
+**Solo games do not count towards statistics or leaderboards.** They are archived to your history
+so you can review them, and the stats trigger skips anything flagged `isSolo` - a win against a
+computer must never dilute a board built on games between people.
+
+The bot logic lives in `src/game/bot.ts` alongside the rest of the engine, so it is covered by
+the same pure unit tests (legal play at every difficulty, all eleven rounds for 2-7 players, no
+card ever lost or duplicated, determinism for a given seed, and a statistical check that Hard
+really does beat Easy).
 
 ---
 
@@ -270,6 +300,15 @@ npm run deploy:functions    # cloud functions only
 npm run deploy:hosting      # the built SPA only
 ```
 
+**Deploy in this order the first time:** `deploy:rules`, then `deploy:functions`, then
+`deploy:hosting`. Hosting on its own gives you a site that loads and then fails on every action,
+because the entire backend is Cloud Functions.
+
+> **If you are deploying into a Firebase project that already hosts another app,** be careful:
+> `firebase deploy` replaces that project's Firestore rules, indexes and Storage rules with the
+> ones in this repository. Use a dedicated project for the game, or merge the rule files by hand
+> first.
+
 **Deploy the rules and indexes before the first real game.** Without the composite indexes in
 `firestore.indexes.json` several listeners (active games, history, leaderboards, invitations) will
 fail with a `failed-precondition` error. The console error message always contains a one-click
@@ -297,11 +336,12 @@ just because a schedule did not fire.
 
 ```bash
 npm run typecheck     # tsc --noEmit over the whole app
-npm test              # rules engine: 102 tests, no React, no network
+npm test              # rules engine + bots: 109 tests, no React, no network
 npm run test:ui       # 18 jsdom tests: table rendering, app boot, boot overlay
-npm run test:browser  # 20 assertions in real Chromium (see below)
+npm run test:browser  # 32 assertions in real Chromium (see below)
+npm run test:flows    # clicks through register -> lobby -> solo game
 npm run verify:build  # inspects dist/ for undeployable configuration
-node scripts/e2e-backend.mjs   # 57 integration tests against live emulators
+node scripts/e2e-backend.mjs   # 72 integration tests against live emulators
 ```
 
 **The engine suite** (`src/game/__tests__/`) covers deck integrity, book/run validation with
@@ -329,6 +369,10 @@ sudo npx playwright install-deps chromium   # or the equivalent system packages
 npm run dev          # in another terminal, then:
 npm run test:browser
 ```
+
+**The journey suite** (`scripts/browser-flows.mjs`) registers an account, creates a lobby and
+plays a solo turn by clicking the real interface. Raw HTTP tests had reported the server healthy
+while the UI was unusable, so this closes that gap.
 
 **The backend suite** (`scripts/e2e-backend.mjs`) talks raw HTTP to the emulators with real user
 ID tokens, so Security Rules are genuinely enforced. It asserts, among other things, that:
@@ -411,6 +455,29 @@ five-crowns/
 ---
 
 ## Troubleshooting
+
+**"Something went wrong" when creating a lobby (or any other action).**
+Almost always: **the Cloud Functions are not deployed.** Every mutation - creating a lobby,
+dealing, drawing, scoring - is a callable function. If only Hosting was deployed, each call
+returns HTTP 404 and the app can do nothing.
+
+Check it in one command:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" \
+  -X POST https://us-central1-<your-project>.cloudfunctions.net/ensureProfile
+# 404 => not deployed.  400/401 => deployed and reachable.
+```
+
+Fix:
+
+```bash
+npm run deploy:functions
+```
+
+Cloud Functions require the **Blaze** (pay-as-you-go) plan. The free Spark plan cannot deploy
+them, so the game cannot work on Spark - there is no way around it, because the server is where
+all the rules live. The app now says so explicitly instead of showing a generic error.
 
 **The deployed site shows a loading spinner that never finishes.**
 This was a real bug and it is fixed; if you see it again, one of these is the cause.

@@ -121,6 +121,14 @@ export const PlayerSeat = memo(function PlayerSeat({
           )}
         >
           {player.displayName}
+          {player.isBot ? (
+            <span
+              className="ml-1.5 rounded bg-ink/10 px-1.5 py-0.5 align-middle text-[10px] font-semibold uppercase tracking-wide text-ink-muted"
+              title={`Computer opponent${player.botDifficulty ? ` (${player.botDifficulty})` : ''}`}
+            >
+              Bot
+            </span>
+          ) : null}
           {isSelf ? <span className="text-white/50"> (you)</span> : null}
         </p>
         <p className="flex items-center justify-center gap-1 text-[11px] text-white/55">

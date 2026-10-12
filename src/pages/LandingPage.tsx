@@ -78,7 +78,7 @@ export default function LandingPage(): JSX.Element {
             className="inline-flex items-center gap-2 rounded-full border border-gold-400/30 bg-gold-400/10 px-4 py-1.5 text-xs font-medium text-gold-300"
           >
             <Sparkles className="h-3.5 w-3.5" aria-hidden />
-            Real multiplayer · no bots, no fake tables
+            Real multiplayer · or practise solo against the computer
           </motion.span>
 
           <motion.h1

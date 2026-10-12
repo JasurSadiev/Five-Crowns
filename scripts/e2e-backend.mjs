@@ -113,6 +113,9 @@ async function writeDoc(path, token, fields) {
   return res.status;
 }
 
+/** Short alias used by the solo-mode section below. */
+const field = (value) => fromFirestoreValue(value);
+
 function fromFirestoreValue(value) {
   if (value === undefined || value === null) return null;
   if ('stringValue' in value) return value.stringValue;
@@ -384,6 +387,86 @@ async function main() {
 
   const search = await call('searchPlayers', host.token, { query: 'alex' });
   check('player search works', Array.isArray(search.players));
+
+  /* --------------------------- single player --------------------------- */
+  section('Single player against bots');
+
+  const solo = await signUp(`solo${stamp}@example.com`);
+  await call('ensureProfile', solo.token);
+
+  const soloGame = await call('createSoloGame', solo.token, {
+    opponents: 3,
+    difficulty: 'hard',
+  });
+  check('createSoloGame returns a game', Boolean(soloGame?.gameId));
+  const soloId = soloGame.gameId;
+
+  let sg = (await readDoc(`games/${soloId}`, solo.token)).body.fields;
+  check('game is flagged solo', field(sg.isSolo) === true);
+  check('three bot seats were created', (field(sg.botIds) || []).length === 3);
+  check('the table seats four', (field(sg.playerIds) || []).length === 4);
+  check('round 1 deals with 3s wild', field(sg.currentRound) === 1 && field(sg.wildRank) === 3);
+
+  // Bots are not accounts, and their hands are protected like anyone else's.
+  const botSeat = (field(sg.botIds) || [])[0];
+  const botHandRead = await readDoc(`games/${soloId}/hands/${botSeat}`, solo.token);
+  check('a bot hand is unreadable (403)', botHandRead.status === 403, `got ${botHandRead.status}`);
+  const soloSecret = await readDoc(`games/${soloId}/secret/state`, solo.token);
+  check('the solo deck state is unreadable (403)', soloSecret.status === 403);
+
+  // Play the entire game through the real callables.
+  let soloStep = 0;
+  let advanced = 0;
+  let soloFinished = false;
+  let stalled = null;
+  while (soloStep < 900 && !soloFinished) {
+    soloStep += 1;
+    sg = (await readDoc(`games/${soloId}`, solo.token)).body.fields;
+    const status = field(sg.status);
+    if (status === 'finished') {
+      soloFinished = true;
+      break;
+    }
+    if (status === 'round_complete') {
+      const advance = await call('advanceRound', solo.token, { gameId: soloId });
+      advanced += 1;
+      if (advance?.finished) soloFinished = true;
+      continue;
+    }
+    if (field(sg.currentPlayerId) !== solo.uid) {
+      stalled = `turn stuck on ${field(sg.currentPlayerId)}`;
+      break;
+    }
+    if (field(sg.turnPhase) === 'draw') {
+      await call('drawCard', solo.token, { gameId: soloId, requestId: `sr${soloStep}` });
+    } else {
+      const hand = (await readDoc(`games/${soloId}/hands/${solo.uid}`, solo.token)).body.fields;
+      const cards = field(hand.cards) || [];
+      await call('discardCard', solo.token, {
+        gameId: soloId,
+        cardId: cards[cards.length - 1].id,
+        requestId: `sd${soloStep}`,
+      });
+    }
+  }
+  // The server must always hand the turn back; bots never block the human.
+  check('bots always return the turn to the player', stalled === null, stalled ?? '');
+  check('the solo game plays to a finish', soloFinished, `status=${field(sg.status)}`);
+  check('all eleven rounds were played', advanced >= 10, `advanced ${advanced}`);
+
+  sg = (await readDoc(`games/${soloId}`, solo.token)).body.fields;
+  check('a winner was decided', (field(sg.winnerIds) || []).length >= 1);
+  check('every seat has a total', Object.keys(field(sg.totals) || {}).length === 4);
+
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  const soloHistory = await readDoc(`gameHistory/${soloId}`, solo.token);
+  check('the solo game is archived to history', soloHistory.status === 200);
+  if (soloHistory.status === 200) {
+    check('history records it as solo', field(soloHistory.body.fields.isSolo) === true);
+  }
+  const soloProfile = await readDoc(`users/${solo.uid}`, solo.token);
+  const soloPlayed = field(soloProfile.body.fields.gamesPlayed);
+  check('solo results do NOT count towards statistics', !soloPlayed, `gamesPlayed=${soloPlayed}`);
 
   section('Summary');
   console.log(`\n  ${passed} passed, ${failed} failed\n`);

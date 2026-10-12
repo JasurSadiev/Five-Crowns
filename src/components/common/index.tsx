@@ -113,11 +113,13 @@ export interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
-  { label, hint, error, leading, trailing, className, id, ...props },
+  { label, hint, error, leading, trailing, className, id, type = 'text', ...props },
   ref,
 ) {
   const generated = useId();
   const inputId = id ?? generated;
+  // Always emit an explicit type attribute: browsers default to text anyway,
+  // but autofill, password managers and assistive tech all read the attribute.
   return (
     <div className="w-full">
       {label ? (
@@ -132,6 +134,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
           </span>
         ) : null}
         <input
+          type={type}
           ref={ref}
           id={inputId}
           aria-invalid={error ? true : undefined}

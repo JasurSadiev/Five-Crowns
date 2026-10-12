@@ -1,6 +1,7 @@
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { FUNCTIONS_REGION, USE_EMULATORS, app, auth } from './config';
-import { friendlyError } from '../utils/errors';
+import { BACKEND_MISSING, friendlyError } from '../utils/errors';
+import type { BotDifficulty } from '../types/game';
 
 /**
  * Typed gateway to the trusted server.
@@ -22,10 +23,26 @@ async function callViaProxy<TData, TResult>(name: string, data: TData): Promise<
     },
     body: JSON.stringify({ data: data ?? {} }),
   });
-  const body = (await response.json().catch(() => ({}))) as {
+  // A 404 here means the function does not exist (backend not deployed, or the
+  // emulator is not running). Hosting answers with an HTML page, so parsing as
+  // JSON would throw something meaningless instead.
+  if (response.status === 404) {
+    throw Object.assign(new Error('Callable not found'), { code: BACKEND_MISSING });
+  }
+
+  const raw = await response.text();
+  let body: {
     result?: TResult;
     error?: { message?: string; status?: string; details?: { code?: string } };
   };
+  try {
+    body = JSON.parse(raw) as typeof body;
+  } catch {
+    throw Object.assign(new Error(`Server returned ${response.status}: ${raw.slice(0, 80)}`), {
+      code: /<html|<!doctype/i.test(raw) ? BACKEND_MISSING : 'internal',
+    });
+  }
+
   if (body.error) {
     throw Object.assign(new Error(body.error.message ?? 'Request failed'), {
       code: body.error.details?.code ?? body.error.status ?? 'internal',
@@ -80,6 +97,9 @@ export const api = {
   // lobbies
   createLobby: (input: { maxPlayers: number; settings: Record<string, unknown> }) =>
     call<typeof input, { lobbyId: string; joinCode: string }>('createLobby', input),
+  /** Starts a single-player game against computer opponents. */
+  createSoloGame: (input: { opponents: number; difficulty: BotDifficulty }) =>
+    call<typeof input, { gameId: string }>('createSoloGame', input),
   joinLobby: (lobbyId: string) => call<{ lobbyId: string }, { lobbyId: string }>('joinLobby', { lobbyId }),
   joinLobbyByCode: (code: string) =>
     call<{ code: string }, { lobbyId: string }>('joinLobbyByCode', { code }),

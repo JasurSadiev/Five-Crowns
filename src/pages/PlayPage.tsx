@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Eye, Globe, Lock, Plus, RefreshCw, Ticket, Users } from 'lucide-react';
+import { Bot, Eye, Globe, Lock, Plus, RefreshCw, Ticket, Users } from 'lucide-react';
 import {
   Button,
   EmptyState,
@@ -16,7 +16,8 @@ import { api, type PublicLobby } from '../firebase/functions';
 import { useToast } from '../hooks/useToast';
 import { normaliseJoinCode, validateJoinCode } from '../utils/validation';
 import { errorMessage } from '../utils/errors';
-import { DEFAULT_GAME_SETTINGS } from '../types/game';
+import { DEFAULT_GAME_SETTINGS, type BotDifficulty } from '../types/game';
+import { BOT_DIFFICULTY_BLURBS, BOT_DIFFICULTY_LABELS, BOT_DIFFICULTIES } from '../game/bot';
 import { cn } from '../utils/cn';
 
 export default function PlayPage(): JSX.Element {
@@ -35,6 +36,10 @@ export default function PlayPage(): JSX.Element {
   const [turnTimeout, setTurnTimeout] = useState(120);
   const [roundAdvance, setRoundAdvance] = useState<'host' | 'auto'>('host');
   const [tieBreak, setTieBreak] = useState<'shared_win' | 'tie_break_round'>('shared_win');
+
+  const [soloBusy, setSoloBusy] = useState(false);
+  const [opponents, setOpponents] = useState(3);
+  const [difficulty, setDifficulty] = useState<BotDifficulty>('normal');
 
   const [publicLobbies, setPublicLobbies] = useState<PublicLobby[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -93,6 +98,18 @@ export default function PlayPage(): JSX.Element {
       toast.error(caught, 'Could not create the table');
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function startSolo(): Promise<void> {
+    setSoloBusy(true);
+    try {
+      const result = await api.createSoloGame({ opponents, difficulty });
+      navigate(`/game/${result.gameId}`);
+    } catch (caught) {
+      toast.error(caught, 'Could not start the practice game');
+    } finally {
+      setSoloBusy(false);
     }
   }
 
@@ -258,6 +275,76 @@ export default function PlayPage(): JSX.Element {
       </div>
 
       {/* --------------------------- public lobbies --------------------------- */}
+      {/* ----------------------------- solo play ---------------------------- */}
+      <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+        <Panel className="mt-6">
+          <SectionTitle
+            title="Play on your own"
+            subtitle="A full eleven-round game against computer opponents. Same rules, same scoring."
+          />
+
+          <div className="mt-4 grid gap-5 sm:grid-cols-2">
+            <div>
+              <span className="mb-2 block text-sm font-medium text-ink">Opponents</span>
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Number of opponents">
+                {[1, 2, 3, 4, 5, 6].map((count) => (
+                  <button
+                    key={count}
+                    type="button"
+                    onClick={() => setOpponents(count)}
+                    aria-pressed={opponents === count}
+                    className={cn(
+                      'h-10 w-10 rounded-xl border text-sm font-semibold transition',
+                      opponents === count
+                        ? 'border-gold-500 bg-gold-500 text-felt-950'
+                        : 'border-line bg-surface text-ink hover:border-gold-500/50',
+                    )}
+                  >
+                    {count}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-ink-muted">
+                You versus {opponents} {opponents === 1 ? 'bot' : 'bots'} - a{' '}
+                {opponents + 1}-player table.
+              </p>
+            </div>
+
+            <div>
+              <span className="mb-2 block text-sm font-medium text-ink">Difficulty</span>
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Bot difficulty">
+                {BOT_DIFFICULTIES.map((level) => (
+                  <button
+                    key={level}
+                    type="button"
+                    onClick={() => setDifficulty(level)}
+                    aria-pressed={difficulty === level}
+                    className={cn(
+                      'rounded-xl border px-4 py-2 text-sm font-semibold transition',
+                      difficulty === level
+                        ? 'border-gold-500 bg-gold-500 text-felt-950'
+                        : 'border-line bg-surface text-ink hover:border-gold-500/50',
+                    )}
+                  >
+                    {BOT_DIFFICULTY_LABELS[level]}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-ink-muted">{BOT_DIFFICULTY_BLURBS[difficulty]}</p>
+            </div>
+          </div>
+
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <Button onClick={() => void startSolo()} loading={soloBusy} icon={<Bot className="h-4 w-4" />}>
+              Start practice game
+            </Button>
+            <p className="text-xs text-ink-muted">
+              Solo results appear in your history but do not count towards leaderboards.
+            </p>
+          </div>
+        </Panel>
+      </motion.div>
+
       <Panel className="mt-6">
         <SectionTitle
           title="Open tables"

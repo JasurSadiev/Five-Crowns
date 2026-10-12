@@ -33,6 +33,31 @@ const CODE_MESSAGES: Record<string, string> = {
   internal: 'Something went wrong. Please try again.',
 };
 
+/**
+ * Shown when the Cloud Functions backend is missing entirely.
+ *
+ * This is not a hypothetical: deploying only Hosting leaves every callable
+ * returning 404, and the whole app then failed with an unhelpful "Something
+ * went wrong". Creating a lobby, starting a game and every other action runs
+ * on the server, so there is nothing to retry until the backend is deployed.
+ */
+export const BACKEND_MISSING = 'backend-missing';
+
+const BACKEND_MISSING_MESSAGE =
+  'The game server has not been deployed yet, so nothing can be saved. ' +
+  'Run "npm run deploy:functions" to publish it.';
+
+/** True when a failure means "the callable does not exist in this project". */
+export function isBackendMissing(error: unknown): boolean {
+  const raw = error as { code?: string; message?: string } | undefined;
+  const code = String(raw?.code ?? '');
+  if (code === BACKEND_MISSING) return true;
+  // The SDK reports a missing callable as functions/not-found.
+  if (code === 'functions/not-found') return true;
+  // Hosting answers an unknown /404 with an HTML page, which the SDK cannot parse.
+  return /Unexpected token|not valid JSON|<!doctype|<html/i.test(String(raw?.message ?? ''));
+}
+
 export interface FriendlyError extends Error {
   code: string;
   original?: unknown;
@@ -42,19 +67,40 @@ export function friendlyError(error: unknown): FriendlyError {
   const raw = error as { code?: string; message?: string } | undefined;
   const code = raw?.code ?? 'internal';
 
+  // Check this before anything else: a missing backend masquerades as several
+  // different low-level errors, none of which mean what they say.
+  if (isBackendMissing(error)) return build(BACKEND_MISSING, BACKEND_MISSING_MESSAGE, error);
+
   if (code.startsWith('auth/')) {
     return build(code, AUTH_MESSAGES[code] ?? 'We could not complete that sign-in. Try again.', error);
   }
 
-  // Callable errors already carry a human message produced by our functions.
-  if (raw?.message && !/^(INTERNAL|internal)$/.test(raw.message)) {
-    const cleaned = raw.message.replace(/^.*?:\s*/, (match) =>
-      /error/i.test(match) ? '' : match,
-    );
-    return build(code, cleaned || CODE_MESSAGES[code] || 'Something went wrong. Please try again.', error);
+  // Our own Cloud Functions return sentences written for players, so those are
+  // passed through. Anything that still looks like SDK output is replaced -
+  // a user must never see "INTERNAL ASSERTION FAILED" or a stack fragment.
+  if (raw?.message && looksHumanWritten(raw.message)) {
+    return build(code, raw.message.trim(), error);
   }
 
   return build(code, CODE_MESSAGES[code] ?? 'Something went wrong. Please try again.', error);
+}
+
+/**
+ * Is this message safe to show a player?
+ *
+ * Our server messages are plain sentences. Raw SDK errors are recognisable by
+ * shouty constant names, library prefixes and excessive length.
+ */
+function looksHumanWritten(message: string): boolean {
+  const text = message.trim();
+  if (text.length === 0 || text.length > 200) return false;
+  // Library prefixes and internal diagnostics.
+  if (/firebase|firestore|assertion|\binternal\b|exception|\bstack\b/i.test(text)) return false;
+  // Error codes such as auth/wrong-password or PERMISSION_DENIED.
+  if (/[a-z]+\/[a-z-]+/.test(text)) return false;
+  if (/\b[A-Z][A-Z_]{3,}\b/.test(text)) return false;
+  // A sentence, not a token dump.
+  return /^[A-Z0-9"']/.test(text) && /\s/.test(text);
 }
 
 function build(code: string, message: string, original: unknown): FriendlyError {

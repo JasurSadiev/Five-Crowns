@@ -89,7 +89,14 @@ export default defineConfig(({ mode, command }) => {
       // Required so cloud dev previews (*.e2b.app, Codespaces, ngrok...) are accepted.
       allowedHosts: true,
       proxy: emulatorProxy(env),
-      hmr: { clientPort: Number(env.HMR_CLIENT_PORT || 443) },
+      /*
+       * Let Vite infer the HMR socket from the page URL. It then works both
+       * on https://<port>-<sandbox>.e2b.app (wss on 443) and on plain
+       * http://localhost:5173. Hardcoding 443 broke local access and flooded
+       * the console with failed WebSocket retries. Override only if your
+       * proxy needs a specific port.
+       */
+      hmr: env.HMR_CLIENT_PORT ? { clientPort: Number(env.HMR_CLIENT_PORT) } : true,
     },
     build: {
       outDir: 'dist',

@@ -30,6 +30,7 @@ __exportStar(require("./runs"), exports);
 __exportStar(require("./combinations"), exports);
 __exportStar(require("./scoring"), exports);
 __exportStar(require("./turns"), exports);
+__exportStar(require("./bot"), exports);
 var rng_1 = require("./rng");
 Object.defineProperty(exports, "seededRandom", { enumerable: true, get: function () { return rng_1.seededRandom; } });
 Object.defineProperty(exports, "secureRandom", { enumerable: true, get: function () { return rng_1.secureRandom; } });

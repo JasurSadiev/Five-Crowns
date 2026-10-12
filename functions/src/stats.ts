@@ -29,8 +29,17 @@ export const updateStatistics = onDocumentCreated('gameHistory/{gameId}', async 
       const historyRef = col.historyDoc(gameId);
       const historySnap = await tx.get(historyRef);
       if (!historySnap.exists) return;
-      const history = historySnap.data() as GameHistoryEntry & { statsApplied?: boolean };
+      const history = historySnap.data() as GameHistoryEntry & {
+        statsApplied?: boolean;
+        isSolo?: boolean;
+      };
       if (history.statsApplied) return;
+      // Games against computer opponents never count towards statistics or
+      // leaderboards. Mark it done so the trigger is not retried forever.
+      if (history.isSolo) {
+        tx.update(historyRef, { statsApplied: true, statsSkipped: 'solo' });
+        return;
+      }
 
       const players = (history.players ?? []) as HistoryPlayer[];
       if (!players.length) {

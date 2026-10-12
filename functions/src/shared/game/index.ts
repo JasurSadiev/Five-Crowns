@@ -13,6 +13,7 @@ export * from './runs';
 export * from './combinations';
 export * from './scoring';
 export * from './turns';
+export * from './bot';
 export { seededRandom, secureRandom, randomInt, type RandomSource } from './rng';
 export type {
   Card,

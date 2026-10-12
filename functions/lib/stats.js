@@ -59,6 +59,12 @@ exports.updateStatistics = (0, firestore_1.onDocumentCreated)('gameHistory/{game
             const history = historySnap.data();
             if (history.statsApplied)
                 return;
+            // Games against computer opponents never count towards statistics or
+            // leaderboards. Mark it done so the trigger is not retried forever.
+            if (history.isSolo) {
+                tx.update(historyRef, { statsApplied: true, statsSkipped: 'solo' });
+                return;
+            }
             const players = (history.players ?? []);
             if (!players.length) {
                 tx.update(historyRef, { statsApplied: true });

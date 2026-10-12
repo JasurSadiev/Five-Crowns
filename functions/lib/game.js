@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.leaveGame = exports.joinAsSpectator = exports.pingGame = exports.advanceRound = exports.enforceTurnTimeout = exports.goOut = exports.discardCard = exports.takeDiscard = exports.drawCard = exports.startGame = void 0;
+exports.createSoloGame = exports.leaveGame = exports.joinAsSpectator = exports.pingGame = exports.advanceRound = exports.enforceTurnTimeout = exports.goOut = exports.discardCard = exports.takeDiscard = exports.drawCard = exports.startGame = void 0;
 exports.archiveGame = archiveGame;
 const https_1 = require("firebase-functions/v2/https");
 const admin_1 = require("./lib/admin");
@@ -181,6 +181,48 @@ exports.startGame = (0, https_1.onCall)({ enforceAppCheck: admin_1.ENFORCE_APP_C
     })));
     return { gameId };
 })(request.data, (0, guards_1.requireAuth)(request), request));
+/* -------------------------------------------------------------------------- */
+/* Computer opponents                                                          */
+/* -------------------------------------------------------------------------- */
+/**
+ * Plays every consecutive bot turn until it is a human's turn again.
+ *
+ * Bots run on the server through the identical engine functions a human goes
+ * through, inside the same transaction, so there is no path by which a bot can
+ * make an illegal move or a client can influence one. The guard stops a
+ * pathological state from looping forever.
+ */
+function runBotTurns(state, game) {
+    const botIds = game.botIds ?? [];
+    const events = [];
+    const touched = new Set();
+    if (botIds.length === 0)
+        return { state, events, touched: [] };
+    let working = state;
+    for (let guard = 0; guard < 200; guard += 1) {
+        if (working.status === 'complete')
+            break;
+        const next = (0, game_2.currentPlayerId)(working);
+        if (!next || !botIds.includes(next))
+            break;
+        const difficulty = game.botDifficulty?.[next] ?? 'normal';
+        const result = (0, game_2.playBotTurn)(working, next, difficulty);
+        if (!result.ok) {
+            // Never strand the table: fall back to the conservative auto-play.
+            const fallback = (0, game_2.autoPlayTurn)(working, next);
+            if (!fallback.ok)
+                break;
+            working = fallback.state;
+            events.push(...fallback.events);
+        }
+        else {
+            working = result.state;
+            events.push(...result.events);
+        }
+        touched.add(next);
+    }
+    return { state: working, events, touched: [...touched] };
+}
 async function mutateGame(ctx) {
     await admin_1.db.runTransaction(async (tx) => {
         const gameRef = admin_1.col.game(ctx.gameId);
@@ -202,7 +244,11 @@ async function mutateGame(ctx) {
         const result = ctx.mutate(secret.state, game);
         if (!result.ok)
             throw (0, errors_1.appError)(result.code, 'failed-precondition');
-        const state = result.state;
+        // Any bots now due play immediately, in this same transaction.
+        const bots = runBotTurns(result.state, game);
+        const state = bots.state;
+        const events = [...result.events, ...bots.events];
+        const touched = [ctx.uid, ...bots.touched];
         const names = await playerNames(tx, ctx.gameId, game.playerIds);
         tx.set(secretRef, {
             state,
@@ -210,14 +256,16 @@ async function mutateGame(ctx) {
             updatedAt: admin_1.FieldValue.serverTimestamp(),
         }, { merge: true });
         if (state.status === 'complete') {
-            finaliseRound(tx, ctx.gameId, game, state, result.events, names);
+            finaliseRound(tx, ctx.gameId, game, state, events, names);
         }
         else {
-            const discardedBy = result.events.find((event) => event.type === 'discard')?.actorId ?? null;
-            writeHand(tx, ctx.gameId, state, ctx.uid);
-            writePlayerPublic(tx, ctx.gameId, state, ctx.uid);
+            const discardedBy = [...events].reverse().find((event) => event.type === 'discard')?.actorId ?? null;
+            for (const uid of touched) {
+                writeHand(tx, ctx.gameId, state, uid);
+                writePlayerPublic(tx, ctx.gameId, state, uid);
+            }
             tx.update(gameRef, publicGameFields(state, game.settings, discardedBy));
-            writeEvents(tx, ctx.gameId, state, result.events, names);
+            writeEvents(tx, ctx.gameId, state, events, names);
         }
     });
     return { ok: true, replayed: false };
@@ -476,11 +524,15 @@ exports.advanceRound = (0, https_1.onCall)({ enforceAppCheck: admin_1.ENFORCE_AP
         }
         // --- deal the next round -------------------------------------------
         const nextRound = roundJustPlayed + 1;
-        const { state, events } = (0, game_2.startRound)({
+        const dealt = (0, game_2.startRound)({
             round: nextRound,
             turnOrder: game.turnOrder,
             dealerIndex: (0, game_2.dealerIndexForRound)(nextRound, game.turnOrder.length),
         });
+        // Bots seated before the human take their turns straight away.
+        const opened = runBotTurns(dealt.state, game);
+        const state = opened.state;
+        const events = [...dealt.events, ...opened.events];
         tx.set(secretRef, { state, updatedAt: admin_1.FieldValue.serverTimestamp() }, { merge: true });
         game.turnOrder.forEach((id) => {
             writeHand(tx, gameId, state, id);
@@ -544,6 +596,11 @@ async function archiveGame(gameId) {
     await admin_1.col.historyDoc(gameId).set({
         id: gameId,
         gameId,
+        // Solo games are archived so the player can review them, but they are
+        // excluded from statistics and leaderboards: a win against a computer
+        // opponent must never dilute a board built on games between people.
+        isSolo: Boolean(game.isSolo),
+        botIds: game.botIds ?? [],
         playerIds: game.playerIds,
         players: players.map((player) => ({
             uid: player.uid,
@@ -617,5 +674,119 @@ exports.leaveGame = (0, https_1.onCall)({ enforceAppCheck: admin_1.ENFORCE_APP_C
     }
     await admin_1.col.game(gameId).update({ spectatorIds: admin_1.FieldValue.arrayRemove(uid) });
     return { left: true };
+})(request.data, (0, guards_1.requireAuth)(request), request));
+/* -------------------------------------------------------------------------- */
+/* Single player                                                               */
+/* -------------------------------------------------------------------------- */
+const BOT_NAMES = ['Robin', 'Sable', 'Juno', 'Cassius', 'Odette', 'Bruno'];
+/**
+ * Creates a solo game against computer opponents.
+ *
+ * This is a completely ordinary game document: the same engine, the same
+ * transaction pipeline, the same security rules, the same scoring and history.
+ * Only the opponents differ. That means a solo result is as trustworthy as a
+ * multiplayer one, so it can safely count towards statistics.
+ */
+exports.createSoloGame = (0, https_1.onCall)({ enforceAppCheck: admin_1.ENFORCE_APP_CHECK }, async (request) => (0, errors_1.handler)('createSoloGame', async (data, uid) => {
+    await (0, guards_1.rateLimit)(uid, 'createSoloGame', 20, 10 * 60 * 1000);
+    const opponents = (0, guards_1.requireNumber)(data?.opponents ?? 3, 'opponents', 1, game_1.MAX_PLAYERS - 1);
+    const difficulty = data?.difficulty === 'easy' || data?.difficulty === 'hard'
+        ? data.difficulty
+        : 'normal';
+    const profileSnap = await admin_1.col.user(uid).get();
+    if (!profileSnap.exists)
+        throw (0, errors_1.appError)('user_not_found', 'not-found');
+    const profile = profileSnap.data();
+    const gameRef = admin_1.col.games().doc();
+    // Bot ids are namespaced to this game and are not Firebase accounts.
+    const botIds = Array.from({ length: opponents }, (_, i) => `bot_${gameRef.id}_${i + 1}`);
+    const botDifficulty = Object.fromEntries(botIds.map((id) => [id, difficulty]));
+    // The human always sits first so the table reads naturally.
+    const turnOrder = [uid, ...botIds];
+    const names = { [uid]: profile.displayName ?? 'You' };
+    botIds.forEach((id, i) => {
+        names[id] = BOT_NAMES[i % BOT_NAMES.length];
+    });
+    const settings = {
+        ...game_1.DEFAULT_GAME_SETTINGS,
+        privacy: 'private',
+        maxPlayers: turnOrder.length,
+        allowSpectators: false,
+        enableChat: false,
+        // No human is waiting on anyone, so no clock pressure.
+        turnTimeoutSeconds: 600,
+        roundAdvance: 'host',
+    };
+    const dealt = (0, game_2.startRound)({
+        round: 1,
+        turnOrder,
+        dealerIndex: (0, game_2.dealerIndexForRound)(1, turnOrder.length),
+    });
+    const game = {
+        id: gameRef.id,
+        botIds,
+        botDifficulty,
+        isSolo: true,
+        playerIds: turnOrder,
+        turnOrder,
+        hostId: uid,
+        settings,
+    };
+    // If a bot is on lead it plays before the human ever sees the table.
+    const opened = runBotTurns(dealt.state, game);
+    const state = opened.state;
+    const events = [...dealt.events, ...opened.events];
+    await admin_1.db.runTransaction(async (tx) => {
+        tx.set(gameRef, {
+            id: gameRef.id,
+            lobbyId: null,
+            hostId: uid,
+            status: 'playing',
+            playerIds: turnOrder,
+            turnOrder,
+            spectatorIds: [],
+            botIds,
+            botDifficulty,
+            isSolo: true,
+            settings,
+            totals: Object.fromEntries(turnOrder.map((id) => [id, 0])),
+            roundScores: null,
+            winnerIds: [],
+            isTieBreakRound: false,
+            createdAt: admin_1.FieldValue.serverTimestamp(),
+            startedAt: admin_1.FieldValue.serverTimestamp(),
+            finishedAt: null,
+            nextRoundAt: null,
+            ...publicGameFields(state, settings),
+        });
+        tx.set(admin_1.col.gameSecret(gameRef.id), {
+            state,
+            processed: {},
+            updatedAt: admin_1.FieldValue.serverTimestamp(),
+        });
+        turnOrder.forEach((id, seat) => {
+            writeHand(tx, gameRef.id, state, id);
+            tx.set(admin_1.col.gamePlayer(gameRef.id, id), {
+                uid: id,
+                displayName: names[id],
+                photoURL: id === uid ? (profile.photoURL ?? null) : null,
+                seat,
+                isHost: id === uid,
+                isBot: id !== uid,
+                botDifficulty: id === uid ? null : difficulty,
+                cardCount: state.players[id].hand.length,
+                totalScore: 0,
+                roundScore: null,
+                hasGoneOut: false,
+                melds: [],
+                leftover: [],
+                connection: 'online',
+                lastSeenAt: admin_1.FieldValue.serverTimestamp(),
+                updatedAt: admin_1.FieldValue.serverTimestamp(),
+            });
+        });
+        writeEvents(tx, gameRef.id, state, events, names);
+    });
+    return { gameId: gameRef.id };
 })(request.data, (0, guards_1.requireAuth)(request), request));
 //# sourceMappingURL=game.js.map

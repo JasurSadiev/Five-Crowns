@@ -47,6 +47,7 @@ export {
 // Gameplay
 export {
   startGame,
+  createSoloGame,
   drawCard,
   takeDiscard,
   discardCard,

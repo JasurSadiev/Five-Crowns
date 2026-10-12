@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sweepPresence = exports.enforceTurnDeadlines = exports.cleanupExpiredInvitations = exports.cleanupExpiredLobbies = exports.getLeaderboard = exports.updateStatistics = exports.sendChatMessage = exports.leaveGame = exports.joinAsSpectator = exports.pingGame = exports.enforceTurnTimeout = exports.advanceRound = exports.goOut = exports.discardCard = exports.takeDiscard = exports.drawCard = exports.startGame = exports.unblockPlayer = exports.blockPlayer = exports.removeFriend = exports.respondToFriendRequest = exports.sendFriendRequest = exports.cancelInvitation = exports.respondToInvitation = exports.invitePlayer = exports.listPublicLobbies = exports.cancelLobby = exports.updateLobbySettings = exports.kickPlayer = exports.leaveLobby = exports.joinLobbyByCode = exports.joinLobby = exports.createLobby = exports.submitReport = exports.searchPlayers = exports.deleteAccount = exports.syncEmailVerified = exports.updateAvatar = exports.updateUsername = exports.ensureProfile = exports.onUserCreated = void 0;
+exports.sweepPresence = exports.enforceTurnDeadlines = exports.cleanupExpiredInvitations = exports.cleanupExpiredLobbies = exports.getLeaderboard = exports.updateStatistics = exports.sendChatMessage = exports.leaveGame = exports.joinAsSpectator = exports.pingGame = exports.enforceTurnTimeout = exports.advanceRound = exports.goOut = exports.discardCard = exports.takeDiscard = exports.drawCard = exports.createSoloGame = exports.startGame = exports.unblockPlayer = exports.blockPlayer = exports.removeFriend = exports.respondToFriendRequest = exports.sendFriendRequest = exports.cancelInvitation = exports.respondToInvitation = exports.invitePlayer = exports.listPublicLobbies = exports.cancelLobby = exports.updateLobbySettings = exports.kickPlayer = exports.leaveLobby = exports.joinLobbyByCode = exports.joinLobby = exports.createLobby = exports.submitReport = exports.searchPlayers = exports.deleteAccount = exports.syncEmailVerified = exports.updateAvatar = exports.updateUsername = exports.ensureProfile = exports.onUserCreated = void 0;
 /**
  * Five Crowns - trusted server logic.
  *
@@ -45,6 +45,7 @@ Object.defineProperty(exports, "unblockPlayer", { enumerable: true, get: functio
 // Gameplay
 var game_1 = require("./game");
 Object.defineProperty(exports, "startGame", { enumerable: true, get: function () { return game_1.startGame; } });
+Object.defineProperty(exports, "createSoloGame", { enumerable: true, get: function () { return game_1.createSoloGame; } });
 Object.defineProperty(exports, "drawCard", { enumerable: true, get: function () { return game_1.drawCard; } });
 Object.defineProperty(exports, "takeDiscard", { enumerable: true, get: function () { return game_1.takeDiscard; } });
 Object.defineProperty(exports, "discardCard", { enumerable: true, get: function () { return game_1.discardCard; } });

@@ -112,6 +112,10 @@ export interface GamePlayerPublic {
   lastSeenAt: AnyTimestamp;
   isHost: boolean;
   hasGoneOut: boolean;
+  /** True when this seat is played by the computer. */
+  isBot?: boolean;
+  /** Strength of this bot, when it is one. */
+  botDifficulty?: BotDifficulty | null;
   /** Melds are only published once the round is complete. */
   melds: Meld[];
   leftover: Card[];
@@ -134,7 +138,19 @@ export interface DiscardTop {
   by: string | null;
 }
 
+/** Strength of a computer opponent. */
+export type BotDifficulty = 'easy' | 'normal' | 'hard';
+
 export interface Game {
+  /**
+   * Seats played by the computer. These ids are not Firebase accounts, so
+   * nobody can ever authenticate as one and read its hand.
+   */
+  botIds?: string[];
+  /** Strength chosen for each bot seat. */
+  botDifficulty?: Record<string, BotDifficulty>;
+  /** True for a single-player game against bots. */
+  isSolo?: boolean;
   id: string;
   lobbyId: string;
   hostId: string;
